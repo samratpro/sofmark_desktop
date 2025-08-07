@@ -1,0 +1,193 @@
+models.py
+from sqlalchemy import create_engine, Column, Email, Integer, String, Date, ForeignKey, Float, Boolean
+from sqlalchemy.orm import relationship, sessionmaker
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.sql import func
+Base = declarative_base()
+
+
+engine = create_engine('sqlite:///userdata.db')  # Use your preferred database URL
+Base.metadata.create_all(engine)
+Session = sessionmaker(bind=engine)
+session = Session()
+
+class UserData(Base):
+    __tablename__ = "userdata"
+    email = Column(Email)
+    password = Column(String)
+    mac_address = Column(String)
+    date = Column(Date)
+    credits = Column(Integer)
+
+
+class DBTrack(Base):
+    __tablename__ = "dbtrack"
+
+
+
+
+def initialize():
+    userdb = session.query(UserData).first()
+    if not userdb:
+        userdb = UserData()
+        session.add(userdb)
+        session.commit()
+    session.close()
+initialize()
+
+
+login.py
+import sys
+import os
+import re
+import requests
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from PyQt6.QtCore import pyqtSignal
+from PyQt6 import QtCore, QtGui, QtWidgets
+from PyQt6.QtWidgets import QWidget
+from ui.login_ui import Ui_LoginForm
+# from models import initialize
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+import webbrowser
+
+domain = 'http://127.0.0.1:8000'  # Update to your actual API endpoint
+
+class LoginPage(QWidget):
+    login_success_signal = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setup_database()
+        self.ui = Ui_LoginForm()
+        self.ui.setupUi(self)
+        self.setup_ui()
+
+    def setup_database(self):
+        self.Base = declarative_base()
+        self.engine = create_engine('sqlite:///user.db')
+        self.Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+
+    def setup_ui(self):
+        # Login handle
+        self.ui.login_btn.clicked.connect(self.handle_login)
+        self.ui.password_input.setEchoMode(QtWidgets.QLineEdit.EchoMode.Password)
+        self.ui.contact_support_btn.clicked.connect(lambda: webbrowser.open(f"{domain}/login"))
+        self.ui.forgot_link.mousePressEvent = self.open_forgot_password
+        # initialize()
+
+    def open_forgot_password(self, event):
+        webbrowser.open(f"{domain}/forget_password")
+        event.accept()
+
+    def handle_login(self):
+        try:
+            username = self.ui.email_input.text()
+            password = self.ui.password_input.text()
+            if username and password:
+                if re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', username):
+                    session = self.Session()
+                    # user = session.query(UserModel).filter(UserModel.username==username).one_or_none()
+
+                    # --- New: Call the API for license verification ---
+                    software_id = 1  # Hardcoded for demo; make dynamic as needed
+                    mac_address = self.get_mac_address()
+                    device_name = QtCore.QSysInfo.machineHostName() or "Unknown Device"
+                    device_type = sys.platform
+                    os_version = QtCore.QSysInfo.prettyProductName()
+                    ip_address = "0.0.0.0"
+                    location = None
+
+                    if not self.validate_mac(mac_address):
+                        self.ui.error_message.setText("Invalid MAC address format.")
+                        return
+
+                    url = f"{domain}/api/verify-license/{username}/{password}/{software_id}/{mac_address}/"
+                    payload = {
+                        "device_name": device_name,
+                        "device_type": device_type,
+                        "os_version": os_version,
+                        "ip_address": ip_address,
+                        "location": location
+                    }
+
+                    response = requests.post(url, json=payload)
+                    # Defensive: try to parse JSON, else show plain text or HTTP error
+                    try:
+                        data = response.json()
+                    except Exception:
+                        data = {"status": "error", "message": f"HTTP {response.status_code}: {response.text.strip()}"}
+
+                    if response.status_code == 200 and data.get('status') == 'success':
+                        self.ui.error_message.setText('')
+                        self.ui.contact_support_btn.hide()
+                        self.ui.error_message.setText('')
+                        print("Login successful, emitting signal")
+                        print(response.json().get("data"))
+
+                        software_name = response.json().get("data").get("software_name")
+                        software_version = response.json().get("data").get("software_version")
+                        remaining_credit = response.json().get("data").get("total_credits").get("remaining")
+                        print("software_name : ", software_name)
+                        print("software_version : ", software_version)
+                        print("remaining_credit : ", remaining_credit)
+
+                        self.login_success_signal.emit(username)
+                    else:
+                        print("response.status_code : ", response.status_code)
+                        error_message = data.get('message', 'Login failed')
+                        self.ui.error_message.setText(error_message)
+                        print(f"Invalid login: {error_message}")
+                        self.retry_login()
+                else:
+                    self.ui.error_message.setText("Please input a valid email")
+            else:
+                self.ui.error_message.setText("Please input email and password")
+
+        except Exception as e:
+            print(f"Error in handle_login: {e}")
+            self.ui.error_message.setText(f"Server Connection Fail...")
+
+    def validate_mac(self, mac):
+        # MAC address validation (same as API)
+        return bool(re.match(r'^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$', mac or ""))
+
+    def get_mac_address(self):
+        # Cross-platform MAC address fetch (returns first non-loopback MAC)
+        import uuid
+        mac = uuid.getnode()
+        mac_str = ':'.join(('%012X' % mac)[i:i+2] for i in range(0, 12, 2))
+        return mac_str
+
+    def retry_login(self):
+        try:
+            self.ui.login_btn.setEnabled(True)
+        except Exception as e:
+            print(f"Error in retry_login: {e}")
+
+    def retranslateUi(self, LoginForm):
+        _translate = QtCore.QCoreApplication.translate
+        LoginForm.setWindowTitle(_translate("LoginForm", "Form"))
+        self.ui.login_btn.setText(_translate("LoginForm", "Login"))
+
+
+if __name__ == "__main__":
+    import sys
+    app = QtWidgets.QApplication(sys.argv)
+    LoginForm = QtWidgets.QWidget()
+    ui = Ui_LoginForm()
+    ui.setupUi(LoginForm)
+    LoginForm.show()
+    sys.exit(app.exec())
+
+
+
+
+I want after login it will save login data and next time it will autofill email and password from database
+then when hit login button it will check first local db if match
+then check mac_address matching if dosen't mach then go to server to login
+if mac_address macthing then check date it mean after change date it should must be server to login
+if date matching then need to track a sequence
+
+I mean after login
